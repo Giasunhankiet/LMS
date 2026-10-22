@@ -892,7 +892,7 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
                     </div>
                 </div>
 
-                <div class="grid grid-cols-2 sm:grid-cols-4 gap-3" id="users-stats"></div>
+                <div class="grid grid-cols-2 sm:grid-cols-5 gap-3" id="users-stats"></div>
 
                 <div class="flex flex-col sm:flex-row gap-3">
                     <div class="relative flex-1">
@@ -915,6 +915,7 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
                                 <th class="text-left px-4 py-3">Tên đăng nhập</th>
                                 <th class="text-left px-4 py-3">SĐT Zalo</th>
                                 <th class="text-left px-4 py-3">Vai trò</th>
+                                <th class="text-left px-4 py-3">Gói VIP</th>
                                 <th class="text-left px-4 py-3">Ngày đăng ký</th>
                                 <th class="text-right px-4 py-3">Thao tác</th>
                             </tr>
@@ -1744,6 +1745,20 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
         let customExams = {};
         let publicExams = {};   // Đề do quản trị bật công khai (nk_public): ai cũng làm được, không cần đăng nhập
         let publicUnsub = null;
+        let vipContent = {};    // Nội dung câu hỏi các đề VIP (nk_vip): chỉ tài khoản VIP/giáo viên/quản trị đọc được
+        let vipUnsub = null, vipSubscribed = false;
+        // Tài khoản được coi là VIP khi: giáo viên/quản trị, hoặc vip=true và chưa hết hạn (vipUntil trống = vĩnh viễn)
+        function isVipUser(u) {
+            u = u || Auth.user;
+            if (!u) return false;
+            if (u.role === 'teacher' || u.role === 'admin') return true;
+            return u.vip === true && (!u.vipUntil || u.vipUntil > Date.now());
+        }
+        function vipLabel(u) {
+            if (!u || !u.vip) return '';
+            if (!u.vipUntil) return 'VIP vĩnh viễn';
+            return u.vipUntil > Date.now() ? 'VIP đến ' + new Date(u.vipUntil).toLocaleDateString('vi-VN') : 'VIP hết hạn ' + new Date(u.vipUntil).toLocaleDateString('vi-VN');
+        }
 
         const ROLE_LABEL = { student: 'Học sinh', teacher: 'Giáo viên', admin: 'Quản trị viên' };
         // viewAs = 'student' khi giáo viên/quản trị bấm "Xem giao diện học sinh" (chỉ đổi giao diện, quyền thật vẫn nằm ở Auth.user.role và Rules)
@@ -1842,7 +1857,8 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
             Auth.user = rec;
             viewAs = null;
             unsubs.forEach(f => { try { f(); } catch (e) {} }); unsubs = [];
-            usersCache = {}; forumPosts = []; recentHistory = []; customExams = {};
+            usersCache = {}; forumPosts = []; recentHistory = []; customExams = {}; vipContent = {};
+            if (vipUnsub) { try { vipUnsub(); } catch (e) {} vipUnsub = null; } vipSubscribed = false;
             rebuildExams();
             applyRole();
             if (rec) {
@@ -1864,6 +1880,28 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
             if (isAdminUser()) {
                 unsubs.push(Store.onValue('nk_users', v => { usersCache = v || {}; if (activeTab === 'users') renderUsers(); }));
             }
+            // Theo dõi hồ sơ của chính mình để quyền VIP do quản trị cấp có hiệu lực ngay, không cần đăng nhập lại
+            const me = Auth.user.username;
+            unsubs.push(Store.onValue('nk_users/' + me, v => {
+                if (!v || !Auth.user || Auth.user.username !== me) return;
+                const nv = v.vip === true, nu = v.vipUntil || null;
+                if (nv === (Auth.user.vip === true) && nu === (Auth.user.vipUntil || null)) return;
+                Auth.user = { ...Auth.user, vip: nv || null, vipUntil: nu };
+                subscribeVip(); rebuildExams(); refreshActiveView();
+                if (nv) showToast('Tài khoản của bạn đã được cấp quyền VIP.', 'success');
+            }));
+            subscribeVip();
+        }
+        // Chỉ đăng ký đọc nk_vip khi tài khoản đủ quyền (Rules cũng chặn ở máy chủ)
+        function subscribeVip() {
+            const ok = isVipUser();
+            if (ok && !vipSubscribed) {
+                vipSubscribed = true;
+                vipUnsub = Store.onValue('nk_vip', v => { vipContent = v || {}; rebuildExams(); refreshActiveView(); });
+            } else if (!ok && vipSubscribed) {
+                if (vipUnsub) { try { vipUnsub(); } catch (e) {} vipUnsub = null; }
+                vipSubscribed = false; vipContent = {};
+            }
         }
 
         async function loadHistory() {
@@ -1881,7 +1919,16 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
         function rebuildExams() {
             // Khách chưa đăng nhập chỉ thấy các đề công khai
             if (!Auth.user) { examsDatabase = publicExamList(); return; }
-            const customs = Object.keys(customExams).map(k => ({ ...customExams[k], id: k, custom: true, isPublic: !!publicExams[k] }))
+            const customs = Object.keys(customExams).map(k => {
+                const c = { ...customExams[k], id: k, custom: true, isPublic: !!publicExams[k] };
+                if (c.vip) {
+                    const full = vipContent[k];
+                    c.qcount = c.qcount || (full && full.questions ? full.questions.length : 0);
+                    if (full && Array.isArray(full.questions) && isVipUser()) { c.questions = full.questions; c.locked = false; }
+                    else { c.questions = []; c.locked = true; }
+                }
+                return c;
+            })
                 .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
             examsDatabase = customs.concat(BUILTIN_EXAMS);
         }
@@ -2019,11 +2066,11 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
                 <div class="space-y-1 min-w-0">
                     <div class="flex flex-wrap items-center gap-x-2 text-xs text-slate-500">
                         <span class="font-bold px-2.5 py-0.5 rounded-full ${st.bg} ${st.text} border ${st.border}"><i class="fa-solid ${st.icon} mr-1"></i>${exam.subject}</span>
-                        <span>${exam.level}</span><span>• ${exam.duration} phút</span><span>• ${exam.questions.length} câu</span>${exam.isPublic ? '<span class="font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">Công khai</span>' : ''}
+                        <span>${exam.level}</span><span>• ${exam.duration} phút</span><span>• ${exam.locked ? (exam.qcount || '?') : exam.questions.length} câu</span>${exam.vip ? '<span class="font-bold text-amber-700 bg-amber-50 border border-amber-300 px-2 py-0.5 rounded-lg"><i class="fa-solid fa-crown mr-1"></i>VIP</span>' : ''}${exam.isPublic ? '<span class="font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">Công khai</span>' : ''}
                     </div>
                     <p class="font-bold text-slate-900 text-sm sm:text-base leading-snug">${escapeHtml(exam.title)}</p>
                 </div>
-                <button onclick="startExamById('${exam.id}')" class="self-start sm:self-center px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold whitespace-nowrap">${btnLabel}</button>
+                <button onclick="startExamById('${exam.id}')" class="self-start sm:self-center px-4 py-2 rounded-xl ${exam.locked ? 'bg-amber-500 hover:bg-amber-600' : 'bg-blue-600 hover:bg-blue-700'} text-white text-xs font-bold whitespace-nowrap">${exam.locked ? '<i class="fa-solid fa-lock mr-1"></i>Đề VIP' : btnLabel}</button>
             </div>`;
         }
         function renderLanding() {
@@ -2041,7 +2088,7 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
         function guestPickSubject() { openAuth('login'); }
         function renderHome() {
             if (!Auth.user) return;
-            document.getElementById('home-greeting').textContent = Auth.user.username;
+            document.getElementById('home-greeting').textContent = Auth.user.username + (Auth.user.role === 'student' && isVipUser() ? ' 👑 (' + (vipLabel(Auth.user) || 'VIP') + ')' : '');
             document.getElementById('home-stat-count').textContent = recentHistory.length;
             const avg = recentHistory.length ? (recentHistory.reduce((s, h) => s + parseFloat(h.score), 0) / recentHistory.length).toFixed(1) : '–';
             document.getElementById('home-stat-avg').textContent = avg;
@@ -2168,7 +2215,7 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
             const cnt = r => all.filter(u => u.role === r).length;
             document.getElementById('users-stats').innerHTML = [
                 ['Tổng tài khoản', all.length, 'text-slate-900'], ['Học sinh', cnt('student'), 'text-blue-700'],
-                ['Giáo viên', cnt('teacher'), 'text-amber-600'], ['Quản trị', cnt('admin'), 'text-rose-600']
+                ['VIP đang hiệu lực', all.filter(u => u.role === 'student' && isVipUser(u)).length, 'text-amber-600'], ['Giáo viên', cnt('teacher'), 'text-amber-600'], ['Quản trị', cnt('admin'), 'text-rose-600']
             ].map(([l, n, c]) => `<div class="bg-slate-50 border border-slate-200 rounded-xl p-3 text-center"><p class="text-2xl font-extrabold ${c}">${n}</p><p class="text-xs text-slate-500">${l}</p></div>`).join('');
             const q = document.getElementById('users-search').value.trim().toLowerCase();
             const rf = document.getElementById('users-role-filter').value;
@@ -2181,9 +2228,14 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
                     <td class="px-4 py-3"><a href="${zaloLink(u.phone)}" target="_blank" rel="noopener" class="text-blue-600 hover:underline font-mono">${escapeHtml(u.phone)}</a></td>
                     <td class="px-4 py-3"><select ${me ? 'disabled' : ''} onchange="changeUserRole('${u.username}', this.value)" class="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold disabled:bg-slate-100">
                         ${['student', 'teacher', 'admin'].map(r => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${ROLE_LABEL[r]}</option>`).join('')}</select></td>
+                    <td class="px-4 py-3">${u.role !== 'student' ? '<span class="text-xs text-slate-400">Mặc định có VIP</span>' : `<div class="flex flex-col gap-1">${u.vip ? `<span class="text-[11px] font-bold ${isVipUser(u) ? 'text-amber-700' : 'text-slate-400'}"><i class="fa-solid fa-crown mr-1"></i>${vipLabel(u)}</span>` : ''}
+                        <select onchange="setUserVip('${u.username}', this.value)" class="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold">
+                            <option value="keep">${u.vip ? 'Đổi gói...' : 'Chưa VIP – cấp...'}</option>
+                            <option value="30">Cấp VIP 1 tháng</option><option value="90">Cấp VIP 3 tháng</option><option value="180">Cấp VIP 6 tháng</option><option value="365">Cấp VIP 1 năm</option><option value="0">Cấp VIP vĩnh viễn</option>
+                            ${u.vip ? '<option value="off">Thu hồi VIP</option>' : ''}</select></div>`}</td>
                     <td class="px-4 py-3 text-slate-600">${fmtDate(u.createdAt)}</td>
                     <td class="px-4 py-3 text-right"><button onclick="openResetModal('${u.username}')" class="px-3 py-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 text-xs font-bold">Đặt lại MK</button></td></tr>`;
-            }).join('') : '<tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">Không có người dùng phù hợp.</td></tr>';
+            }).join('') : '<tr><td colspan="7" class="px-4 py-8 text-center text-slate-400">Không có người dùng phù hợp.</td></tr>';
         }
         async function changeUserRole(username, role) {
             if (!confirm(`Đổi vai trò của "${username}" thành ${ROLE_LABEL[role]}?`)) { renderUsers(); return; }
@@ -2229,22 +2281,22 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
         function stamp() { const d = new Date(); return d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0'); }
         function exportUsersCsv() {
             const q = c => '"' + String(c).replace(/"/g, '""') + '"';
-            const lines = [['STT', 'Tên đăng nhập', 'SĐT Zalo', 'Vai trò', 'Ngày đăng ký'].map(q).join(',')];
-            usersList().forEach((u, i) => lines.push([i + 1, u.username, '="' + u.phone + '"', ROLE_LABEL[u.role] || u.role, fmtDate(u.createdAt)].map(q).join(',')));
+            const lines = [['STT', 'Tên đăng nhập', 'SĐT Zalo', 'Vai trò', 'Gói VIP', 'Ngày đăng ký'].map(q).join(',')];
+            usersList().forEach((u, i) => lines.push([i + 1, u.username, '="' + u.phone + '"', ROLE_LABEL[u.role] || u.role, vipLabel(u) || (u.role === 'student' ? 'Chưa VIP' : ''), fmtDate(u.createdAt)].map(q).join(',')));
             downloadBlob('﻿' + lines.join('\r\n'), 'danh-sach-nguoi-dung-' + stamp() + '.csv', 'text/csv;charset=utf-8');
             showToast('Đã xuất danh sách (mở bằng Excel).');
         }
         function exportUsersWord() {
             const list = usersList();
             const td = 'border:1px solid #000;padding:4px 6px;font-family:"Times New Roman",serif;font-size:13pt;';
-            const rows = list.map((u, i) => `<tr><td style="${td}text-align:center;">${i + 1}</td><td style="${td}">${escapeHtml(u.username)}</td><td style="${td}">${escapeHtml(u.phone)}</td><td style="${td}">${ROLE_LABEL[u.role] || u.role}</td><td style="${td}">${fmtDate(u.createdAt)}</td></tr>`).join('');
+            const rows = list.map((u, i) => `<tr><td style="${td}text-align:center;">${i + 1}</td><td style="${td}">${escapeHtml(u.username)}</td><td style="${td}">${escapeHtml(u.phone)}</td><td style="${td}">${ROLE_LABEL[u.role] || u.role}</td><td style="${td}">${escapeHtml(vipLabel(u) || (u.role === 'student' ? 'Chưa VIP' : ''))}</td><td style="${td}">${fmtDate(u.createdAt)}</td></tr>`).join('');
             const th = td + 'font-weight:bold;text-align:center;background:#e5e7eb;';
             const doc = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"><title>Danh sách người dùng</title>
                 <style>body,p,td,th{font-family:"Times New Roman",serif;font-size:13pt;}</style></head><body>
                 <p style="text-align:center;font-weight:bold;">TRUNG TÂM NHÂN KIỆT</p>
                 <p style="text-align:center;font-weight:bold;">DANH SÁCH NGƯỜI DÙNG</p>
                 <p style="text-align:center;">Ngày xuất: ${new Date().toLocaleDateString('vi-VN')} · Tổng số: ${list.length} tài khoản</p>
-                <table style="border-collapse:collapse;width:100%;"><tr><th style="${th}">STT</th><th style="${th}">Tên đăng nhập</th><th style="${th}">SĐT Zalo</th><th style="${th}">Vai trò</th><th style="${th}">Ngày đăng ký</th></tr>${rows}</table></body></html>`;
+                <table style="border-collapse:collapse;width:100%;"><tr><th style="${th}">STT</th><th style="${th}">Tên đăng nhập</th><th style="${th}">SĐT Zalo</th><th style="${th}">Vai trò</th><th style="${th}">Gói VIP</th><th style="${th}">Ngày đăng ký</th></tr>${rows}</table></body></html>`;
             downloadBlob('﻿' + doc, 'danh-sach-nguoi-dung-' + stamp() + '.doc', 'application/msword');
             showToast('Đã xuất file Word.');
         }
@@ -2328,15 +2380,116 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
             if (!confirm('Xóa đề thi này khỏi kho đề?')) return;
             try {
                 if (publicExams[id]) await Store.remove('nk_public/' + id);
+                const wasVip = (customExams[id] || {}).vip;
                 await Store.remove('nk_exams/' + id);
+                if (wasVip) { try { await Store.remove('nk_vip/' + id); } catch (e) {} }
                 showToast('Đã xóa đề.');
             } catch (e) { showToast('Không xóa được đề.', 'info'); }
         }
+        // ---- QUYỀN TRUY CẬP ĐỀ: 3 chế độ ----
+        //  login  = tài khoản đăng nhập nào cũng làm được (mặc định)
+        //  public = công khai cho tất cả (khách không cần đăng nhập)
+        //  vip    = chỉ tài khoản VIP
+        const ACCESS_LABEL = { login: 'Đăng nhập là làm được', public: 'Công khai cho tất cả', vip: 'Chỉ dành cho VIP' };
+        const examAccess = e => e.vip ? 'vip' : (e.isPublic ? 'public' : 'login');
+        function accessSelectHtml(onchange, cur) {
+            const o = (v, t) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${t}</option>`;
+            return `<select onchange="${onchange}" class="w-full mt-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                ${cur === 'keep' ? '<option value="keep">Đổi quyền cả thư mục...</option>' : ''}
+                ${o('login', '🔑 ' + ACCESS_LABEL.login)}${o('public', '🌐 ' + ACCESS_LABEL.public)}${o('vip', '👑 ' + ACCESS_LABEL.vip)}</select>`;
+        }
+        // Đổi quyền một đề (không hỏi lại). Ném lỗi nếu Rules chưa cho phép.
+        async function applyAccess(ex, mode) {
+            const id = ex.id, cur = examAccess(ex);
+            if (cur === mode) return false;
+            if (!ex.questions || !ex.questions.length || ex.locked) throw new Error('chưa tải nội dung đề');
+            const full = JSON.parse(JSON.stringify({ ...ex, custom: undefined, isPublic: undefined, locked: undefined, qcount: undefined, vip: undefined }));
+            // 1) đưa đề về trạng thái "đăng nhập" đầy đủ trước
+            if (cur === 'vip') { await Store.set('nk_exams/' + id, full); await Store.remove('nk_vip/' + id); }
+            if (cur === 'public' && mode !== 'public') await Store.remove('nk_public/' + id);
+            // 2) rồi áp dụng chế độ mới
+            if (mode === 'public') await Store.set('nk_public/' + id, full);
+            if (mode === 'vip') {
+                await Store.set('nk_vip/' + id, { questions: full.questions });
+                await Store.set('nk_exams/' + id, { ...full, questions: 'vip', qcount: ex.questions.length, vip: true });
+            }
+            return true;
+        }
+        async function setExamAccess(id, mode) {
+            if (!isAdminUser()) return;
+            const ex = examsDatabase.find(e => e.id === id && e.custom);
+            if (!ex) return;
+            if (mode === 'public' && !confirm('Công khai đề này cho tất cả?\n\nBất kỳ ai có đường link web đều làm được mà không cần đăng nhập, và xem được đáp án sau khi nộp bài.')) { refreshActiveView(); return; }
+            try { await applyAccess(ex, mode); showToast('Đã đặt quyền: ' + ACCESS_LABEL[mode] + '.'); }
+            catch (e) { showToast('Không thực hiện được. Hãy dán Rules mới (có nk_public và nk_vip) vào Firebase rồi Publish.', 'info'); }
+            refreshActiveView();
+        }
+        // Đổi quyền cho cả một thư mục (gồm thư mục con)
+        async function setFolderAccess(path, mode) {
+            if (!isAdminUser() || mode === 'keep') { refreshActiveView(); return; }
+            const path0 = normFolder(path);
+            const list = examsDatabase.filter(e => e.custom && (normFolder(e.folder) === path0 || normFolder(e.folder).startsWith(path0 + '/')));
+            if (!list.length) { showToast('Thư mục này chưa có đề nào.', 'info'); refreshActiveView(); return; }
+            if (!confirm(`Đặt quyền "${ACCESS_LABEL[mode]}" cho ${list.length} đề trong thư mục:\n${path0}` + (mode === 'public' ? '\n\nLưu ý: ai có link web cũng làm được các đề này mà không cần đăng nhập.' : ''))) { refreshActiveView(); return; }
+            showToast('Đang cập nhật quyền các đề...', 'info');
+            let ok = 0, fail = 0;
+            for (const ex of list) { try { if (await applyAccess(ex, mode)) ok++; } catch (e) { fail++; } }
+            showToast(`Đã đặt quyền "${ACCESS_LABEL[mode]}" cho ${ok} đề` + (fail ? `, ${fail} đề lỗi (kiểm tra Rules).` : '.'), fail ? 'info' : 'success');
+            refreshActiveView();
+        }
+
+        // ---- VIP ----
+        function showVipInfo() {
+            showToast('Đây là đề VIP. Tài khoản của bạn chưa có quyền VIP – hãy liên hệ thầy Nhân Kiệt qua Zalo để được cấp quyền.', 'info');
+        }
+        // Quản trị đặt/bỏ VIP cho đề: nội dung câu hỏi chuyển sang nk_vip (Rules chỉ cho tài khoản VIP đọc),
+        // nk_exams chỉ giữ phần giới thiệu (tên, môn, số câu) để học sinh vẫn thấy đề trong kho.
+        async function setExamVip(id, on) {
+            if (!isAdminUser()) return;
+            const ex = examsDatabase.find(e => e.id === id && e.custom);
+            if (!ex) return;
+            if (ex.locked || (!ex.questions.length)) { showToast('Chưa tải được nội dung đề, thử lại sau giây lát.', 'info'); return; }
+            if (on && !confirm('Đặt đề này làm đề VIP?\n\nChỉ tài khoản VIP (do quản trị cấp) mới làm được. Đề sẽ tự tắt công khai nếu đang công khai.')) return;
+            try {
+                const full = JSON.parse(JSON.stringify({ ...ex, custom: undefined, isPublic: undefined, locked: undefined, qcount: undefined, vip: undefined }));
+                if (on) {
+                    if (publicExams[id]) await Store.remove('nk_public/' + id);
+                    await Store.set('nk_vip/' + id, { questions: full.questions });
+                    const stub = { ...full, questions: 'vip', qcount: ex.questions.length, vip: true };
+                    await Store.set('nk_exams/' + id, stub);
+                    showToast('Đã đặt làm đề VIP.');
+                } else {
+                    await Store.set('nk_exams/' + id, full);
+                    await Store.remove('nk_vip/' + id);
+                    showToast('Đã bỏ VIP: đề mở lại cho mọi tài khoản đăng nhập.');
+                }
+            } catch (e) {
+                showToast('Không thực hiện được. Hãy dán Rules mới (có nhánh nk_vip) vào Firebase rồi Publish.', 'info');
+            }
+        }
+        // Quản trị cấp/thu hồi VIP cho tài khoản. days = 0 → vĩnh viễn; 'off' → bỏ VIP
+        async function setUserVip(username, val) {
+            if (!isAdminUser()) return;
+            let upd;
+            if (val === 'off') upd = { vip: null, vipUntil: null };
+            else if (val === 'keep') { renderUsers(); return; }
+            else {
+                const days = parseInt(val, 10);
+                upd = { vip: true, vipUntil: days > 0 ? Date.now() + days * 86400000 : null };
+            }
+            try {
+                await Store.update({ ['nk_users/' + username + '/vip']: upd.vip, ['nk_users/' + username + '/vipUntil']: upd.vipUntil });
+                showToast(val === 'off' ? `Đã thu hồi VIP của "${username}".` : `Đã cấp VIP cho "${username}".`);
+            } catch (e) { showToast('Không cấp được VIP. Hãy dán Rules mới (có trường vip) vào Firebase rồi Publish.', 'info'); }
+            renderUsers();
+        }
+
         // Quản trị bật/tắt công khai: sao chép đề sang nk_public (ai cũng đọc được) hoặc gỡ khỏi đó
         async function setExamPublic(id, on) {
             if (!isAdminUser()) return;
             const ex = examsDatabase.find(e => e.id === id && e.custom);
             if (!ex) return;
+            if (on && ex.vip) { showToast('Đề VIP không thể công khai. Hãy bỏ VIP trước.', 'info'); return; }
             if (on && !confirm('Bật công khai đề này?\n\nBất kỳ ai có đường link web đều làm được đề mà không cần đăng nhập, và có thể xem đáp án sau khi nộp bài.')) return;
             try {
                 if (on) {
@@ -2425,7 +2578,7 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
         async function collectBackup() {
             const safe = async p => { try { return (await Store.get(p)) || {}; } catch (e) { return {}; } };
             const users = await safe('nk_users');
-            const data = { nk_users: users, nk_exams: await safe('nk_exams'), nk_public: await safe('nk_public'), nk_forum: await safe('nk_forum'), nk_history: {} };
+            const data = { nk_users: users, nk_exams: await safe('nk_exams'), nk_public: await safe('nk_public'), nk_vip: await safe('nk_vip'), nk_forum: await safe('nk_forum'), nk_history: {} };
             for (const u of Object.keys(users)) {
                 const h = await safe('nk_history/' + u);
                 if (Object.keys(h).length) data.nk_history[u] = h;
@@ -2520,6 +2673,7 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
                 await put('nk_users/' + u, bk.data.nk_users[u]);
             }
             for (const id of Object.keys(bk.data.nk_exams || {})) await put('nk_exams/' + id, bk.data.nk_exams[id]);
+            for (const id of Object.keys(bk.data.nk_vip || {})) await put('nk_vip/' + id, bk.data.nk_vip[id]);
             for (const id of Object.keys(bk.data.nk_public || {})) await put('nk_public/' + id, bk.data.nk_public[id]);
             showToast(`Khôi phục xong: ${ok} mục thành công` + (fail ? `, ${fail} mục lỗi.` : '.'), fail ? 'info' : 'success');
         }
@@ -2552,10 +2706,12 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
             return Object.values(map).sort((a, b) => a.name.localeCompare(b.name, 'vi', { numeric: true }));
         }
         function folderCardHtml(f) {
-            return `<button type="button" onclick='setFolder(${JSON.stringify(f.path).replace(/'/g, "&#39;")})' class="text-left bg-amber-50 hover:bg-amber-100 border border-amber-200 hover:border-amber-400 rounded-2xl p-5 shadow-sm transition flex items-center gap-4 self-start">
+            const btn = `<button type="button" onclick='setFolder(${JSON.stringify(f.path).replace(/'/g, "&#39;")})' class="text-left bg-amber-50 hover:bg-amber-100 border border-amber-200 hover:border-amber-400 rounded-2xl p-5 shadow-sm transition flex items-center gap-4 self-start">
                 <span class="w-12 h-12 rounded-xl bg-amber-400 text-white flex items-center justify-center text-xl flex-shrink-0"><i class="fa-solid fa-folder"></i></span>
                 <span class="min-w-0"><span class="block font-extrabold text-slate-900 leading-snug">${escapeHtml(f.name)}</span><span class="block text-xs text-slate-500 mt-0.5">${f.count} đề</span></span>
                 <i class="fa-solid fa-chevron-right ml-auto text-amber-500"></i></button>`;
+            if (!isAdminUser()) return btn;
+            return `<div class="flex flex-col gap-1.5">${btn}<div class="px-1"><label class="block text-[11px] font-bold text-slate-500 uppercase">Quyền truy cập cả bộ đề</label>${accessSelectHtml(`setFolderAccess(${JSON.stringify(f.path).replace(/"/g, '&quot;')}, this.value)`, 'keep')}</div></div>`;
         }
         function folderBarHtml(flat) {
             if (flat) return '<span class="text-xs text-slate-500"><i class="fa-solid fa-filter mr-1"></i>Đang lọc/tìm kiếm trên toàn bộ kho đề. Xóa bộ lọc để duyệt theo thư mục.</span>';
@@ -2568,6 +2724,7 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
                     `<button onclick='setFolder(${JSON.stringify(path).replace(/'/g, "&#39;")})' class="px-3 py-1.5 rounded-lg font-bold ${last ? 'bg-blue-600 text-white' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'}">${escapeHtml(sg)}</button>`;
             });
             if (segs.length) html += `<button onclick="setFolder('${segs.slice(0, -1).join('/').replace(/'/g, '')}')" class="ml-2 px-3 py-1.5 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-100"><i class="fa-solid fa-arrow-up mr-1"></i>Lên 1 cấp</button>`;
+            if (currentFolder && isAdminUser()) html += `<span class="ml-auto w-full sm:w-72"><span class="block text-[10px] font-bold text-slate-500 uppercase">Quyền truy cập cả thư mục này</span>${accessSelectHtml(`setFolderAccess(${JSON.stringify(currentFolder).replace(/"/g, '&quot;')}, this.value)`, 'keep')}</span>`;
             return html;
         }
         // Mẫu các loại đề tạo từ 1 bộ đề nhiều đề
@@ -2685,7 +2842,7 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
                                 <span class="text-xs font-bold px-3 py-1 rounded-full ${st.bg} ${st.text} border ${st.border}">
                                     <i class="fa-solid ${st.icon} mr-1"></i>${exam.subject}
                                 </span>
-                                <span class="flex items-center gap-1.5">${exam.isPublic ? '<span class="text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded-lg"><i class="fa-solid fa-earth-asia mr-1"></i>Công khai</span>' : ''}<span class="text-xs font-semibold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-lg">${exam.type}</span></span>
+                                <span class="flex items-center gap-1.5">${exam.vip ? '<span class="text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-300 px-2 py-1 rounded-lg"><i class="fa-solid fa-crown mr-1"></i>VIP</span>' : ''}${exam.isPublic ? '<span class="text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded-lg"><i class="fa-solid fa-earth-asia mr-1"></i>Công khai</span>' : ''}<span class="text-xs font-semibold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-lg">${exam.type}</span></span>
                             </div>
 
                             <h3 class="text-base sm:text-lg font-extrabold text-slate-900 leading-snug">${exam.title}</h3>
@@ -2697,7 +2854,7 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
                             <div class="grid grid-cols-3 gap-2 text-center bg-slate-50 p-2.5 rounded-xl text-xs">
                                 <div>
                                     <p class="text-slate-400 text-[10px]">Số câu</p>
-                                    <p class="font-bold text-slate-800">${exam.questions.length} câu</p>
+                                    <p class="font-bold text-slate-800">${exam.locked ? (exam.qcount || '?') : exam.questions.length} câu</p>
                                 </div>
                                 <div class="border-x border-slate-200">
                                     <p class="text-slate-400 text-[10px]">Thời gian</p>
@@ -2714,11 +2871,11 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
                                 <span><i class="fa-solid fa-users mr-1"></i>${exam.attempts} lượt thi</span>
                             </div>
 
-                            ${(exam.custom && isAdminUser()) ? `<button onclick="setExamPublic('${exam.id}', ${!exam.isPublic})" class="w-full py-2 rounded-xl ${exam.isPublic ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300' : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-300'} border font-bold text-xs"><i class="fa-solid ${exam.isPublic ? 'fa-lock-open' : 'fa-lock'} mr-1"></i>${exam.isPublic ? 'Đang công khai · bấm để tắt' : 'Bật công khai (ai cũng làm được)'}</button>` : ''}
+                            ${(exam.custom && isAdminUser()) ? `<label class="block text-[11px] font-bold text-slate-500 uppercase">Quyền truy cập đề</label>${accessSelectHtml(`setExamAccess('${exam.id}', this.value)`, examAccess(exam))}` : ''}
                             ${(exam.custom && isStaff()) ? `<button onclick="deleteExam('${exam.id}')" class="w-full py-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-bold text-xs"><i class="fa-solid fa-trash-can mr-1"></i>Xóa đề này</button>` : ''}
-                            <button onclick="startExamById('${exam.id}')" class="w-full py-3 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold text-sm shadow-md shadow-blue-500/15 transition flex items-center justify-center space-x-2">
-                                <i class="fa-solid fa-pen-clip"></i>
-                                <span>Vào Làm Bài Trực Tuyến</span>
+                            <button onclick="startExamById('${exam.id}')" class="w-full py-3 rounded-xl ${exam.locked ? 'bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600' : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700'} text-white font-bold text-sm shadow-md shadow-blue-500/15 transition flex items-center justify-center space-x-2">
+                                <i class="fa-solid ${exam.locked ? 'fa-lock' : 'fa-pen-clip'}"></i>
+                                <span>${exam.locked ? 'Đề VIP – Mở khóa để làm bài' : 'Vào Làm Bài Trực Tuyến'}</span>
                             </button>
                         </div>
                     </div>
@@ -2737,6 +2894,7 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
                 if (!found) { openAuth('login'); return; }
             }
             if (!found) return;
+            if (found.vip && (found.locked || !found.questions.length)) { showVipInfo(); return; }
 
             currentExam = found;
             userAnswers = {};
