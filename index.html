@@ -298,6 +298,9 @@
                     </div>
                 </div>
 
+                <!-- Thanh đường dẫn thư mục (Kho đề › Vật lý 12 › ...) -->
+                <div id="folder-bar" class="flex flex-wrap items-center gap-1.5 text-sm"></div>
+
                 <!-- Grid Danh Sách Đề Thi -->
                 <div id="exam-list-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                     <!-- Được render bằng JS -->
@@ -498,6 +501,10 @@
                     <div class="lg:col-span-2">
                         <label class="block text-xs font-bold text-slate-700 uppercase mb-1.5">Mô tả / Dặn dò học sinh</label>
                         <input type="text" id="create-exam-desc" placeholder="VD: Học sinh quan sát kỹ đồ thị và hình vẽ minh họa trong từng câu hỏi trước khi chọn đáp án." class="w-full rounded-xl border border-slate-300 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    </div>
+                    <div class="lg:col-span-4">
+                        <label class="block text-xs font-bold text-slate-700 uppercase mb-1.5">Thư mục trong Kho đề (tùy chọn)</label>
+                        <input type="text" id="create-exam-folder" placeholder="VD: Vật lý 12/Chương I-Vật lý nhiệt/Đề Kiểm tra Giữa HKI  (dùng dấu / để chia cấp thư mục)" class="w-full rounded-xl border border-slate-300 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
                     </div>
                 </div>
 
@@ -742,6 +749,22 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
                                     <option value="tf">Đúng/Sai</option>
                                     <option value="sa">Trả lời ngắn</option>
                                 </select>
+                            </div>
+                            <div id="word-bulk-panel" class="hidden p-4 rounded-2xl bg-indigo-50 border border-indigo-200 space-y-3 text-xs text-slate-700">
+                                <p class="font-extrabold text-indigo-900 text-sm"><i class="fa-solid fa-folder-tree mr-1.5"></i>Tạo thành từng đề riêng và xếp vào thư mục (<span id="bulk-n-exams">0</span> đề trong file)</p>
+                                <div>
+                                    <label class="block font-bold mb-1">Thư mục chứa các đề</label>
+                                    <input id="bulk-folder" value="Vật lý 12/Chương I-Vật lý nhiệt" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white">
+                                </div>
+                                <label class="flex flex-wrap items-center gap-2"><input type="checkbox" id="bulk-mid" checked class="w-4 h-4">
+                                    <span class="font-bold">Đề đầy đủ (Phần I, II, III)</span> vào thư mục con
+                                    <input id="bulk-mid-folder" value="Đề Kiểm tra Giữa HKI" class="rounded-lg border border-slate-300 px-2 py-1.5 bg-white w-56">
+                                    <input id="bulk-mid-time" type="number" min="5" max="180" value="50" class="rounded-lg border border-slate-300 px-2 py-1.5 bg-white w-16"> phút</label>
+                                <label class="flex flex-wrap items-center gap-2"><input type="checkbox" id="bulk-15" checked class="w-4 h-4">
+                                    <span class="font-bold">Đề 15 phút (chỉ các câu trắc nghiệm Phần I)</span> vào thư mục con
+                                    <input id="bulk-15-folder" value="Đề kiểm tra 15 phút" class="rounded-lg border border-slate-300 px-2 py-1.5 bg-white w-56">
+                                    <input id="bulk-15-time" type="number" min="5" max="180" value="15" class="rounded-lg border border-slate-300 px-2 py-1.5 bg-white w-16"> phút</label>
+                                <button type="button" onclick="bulkCreateExams()" class="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm shadow-sm"><i class="fa-solid fa-wand-magic-sparkles mr-1.5"></i>Tạo các đề</button>
                             </div>
                             <div id="word-parsed-list" class="space-y-2.5 max-h-80 overflow-y-auto pr-1"></div>
                         </div>
@@ -1611,6 +1634,7 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
 
         let draftQuestions = []; // Danh sách câu hỏi giáo viên đang soạn
         let currentQuestionImageData = ''; // Lưu DataURL hoặc URL ảnh của câu hỏi đang soạn
+        let parsedBundleItems = [], parsedBundleMeta = []; // Toàn bộ bộ đề vừa đọc (để tạo từng đề riêng)
         let parsedWordQuestionsTemp = []; // Lưu tạm các câu hỏi vừa bóc tách từ File Word
         let currentForumFilter = 'all';
 
@@ -2521,6 +2545,107 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
         };
 
 
+        // ===== Thư mục trong Kho đề & tạo hàng loạt từ bộ đề Word =====
+        let currentFolder = '';
+        function normFolder(v) { return String(v || '').split('/').map(x => x.trim()).filter(Boolean).join('/'); }
+        function setFolder(path) { currentFolder = normFolder(path); renderExamList(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+        function folderChildren(list, base) {
+            const pre = base ? base + '/' : '';
+            const map = {};
+            list.forEach(e => {
+                const f = normFolder(e.folder);
+                if (!f || !f.startsWith(pre) || f === base) return;
+                const name = f.slice(pre.length).split('/')[0];
+                map[name] = map[name] || { name, path: pre + name, count: 0 };
+                map[name].count++;
+            });
+            return Object.values(map).sort((a, b) => a.name.localeCompare(b.name, 'vi', { numeric: true }));
+        }
+        function folderCardHtml(f) {
+            return `<button type="button" onclick='setFolder(${JSON.stringify(f.path).replace(/'/g, "&#39;")})' class="text-left bg-amber-50 hover:bg-amber-100 border border-amber-200 hover:border-amber-400 rounded-2xl p-5 shadow-sm transition flex items-center gap-4 self-start">
+                <span class="w-12 h-12 rounded-xl bg-amber-400 text-white flex items-center justify-center text-xl flex-shrink-0"><i class="fa-solid fa-folder"></i></span>
+                <span class="min-w-0"><span class="block font-extrabold text-slate-900 leading-snug">${escapeHtml(f.name)}</span><span class="block text-xs text-slate-500 mt-0.5">${f.count} đề</span></span>
+                <i class="fa-solid fa-chevron-right ml-auto text-amber-500"></i></button>`;
+        }
+        function folderBarHtml(flat) {
+            if (flat) return '<span class="text-xs text-slate-500"><i class="fa-solid fa-filter mr-1"></i>Đang lọc/tìm kiếm trên toàn bộ kho đề. Xóa bộ lọc để duyệt theo thư mục.</span>';
+            const segs = currentFolder ? currentFolder.split('/') : [];
+            let html = `<button onclick="setFolder('')" class="px-3 py-1.5 rounded-lg font-bold ${segs.length ? 'bg-slate-100 hover:bg-slate-200 text-slate-700' : 'bg-blue-600 text-white'}"><i class="fa-solid fa-house mr-1"></i>Kho đề</button>`;
+            segs.forEach((sg, i) => {
+                const path = segs.slice(0, i + 1).join('/');
+                const last = i === segs.length - 1;
+                html += '<i class="fa-solid fa-chevron-right text-[10px] text-slate-400"></i>' +
+                    `<button onclick='setFolder(${JSON.stringify(path).replace(/'/g, "&#39;")})' class="px-3 py-1.5 rounded-lg font-bold ${last ? 'bg-blue-600 text-white' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'}">${escapeHtml(sg)}</button>`;
+            });
+            if (segs.length) html += `<button onclick="setFolder('${segs.slice(0, -1).join('/').replace(/'/g, '')}')" class="ml-2 px-3 py-1.5 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-100"><i class="fa-solid fa-arrow-up mr-1"></i>Lên 1 cấp</button>`;
+            return html;
+        }
+        // Mẫu các loại đề tạo từ 1 bộ đề nhiều đề
+        const BULK_KINDS = {
+            mid: { sub: 'Đề Kiểm tra Giữa HKI', duration: 50, mcOnly: false, level: 'Ôn thi THPT', type: 'Thi thử', titlePrefix: 'Giữa HKI – ',
+                   desc: n => `Đề kiểm tra Giữa HKI: ${n} câu gồm Phần I (trắc nghiệm nhiều phương án), Phần II (Đúng/Sai) và Phần III (trả lời ngắn).` },
+            quick: { sub: 'Đề kiểm tra 15 phút', duration: 15, mcOnly: true, level: 'Cơ bản', type: 'Bài tập 15p', titlePrefix: 'Kiểm tra 15 phút – ',
+                   desc: n => `Đề kiểm tra 15 phút: ${n} câu trắc nghiệm nhiều phương án.` }
+        };
+        // Tách bộ đề thành từng đề riêng. kinds: [{...BULK_KINDS.x, sub, duration}]
+        function buildExamsFromBundle(items, meta, o) {
+            const out = []; let seq = 0;
+            o.kinds.forEach(kind => {
+                meta.forEach(m => {
+                    const qs = items.filter(x => x.group === m.group && (!kind.mcOnly || (x.type || 'mc') === 'mc'))
+                        .sort((a, b) => ((a.part || 0) - (b.part || 0)) || ((a.num || 0) - (b.num || 0)))
+                        .map(x => { const c = { ...x }; delete c.group; return c; });
+                    if (!qs.length) return;
+                    seq++;
+                    out.push({
+                        id: 'nk-custom-' + o.stamp + '-' + seq, createdAt: o.stamp + seq, order: m.no,
+                        folder: normFolder(o.base + '/' + kind.sub),
+                        title: kind.titlePrefix + m.group + (m.title ? ' – ' + m.title : ''),
+                        subject: o.subject, level: kind.level, type: kind.type, duration: kind.duration,
+                        author: o.author, attempts: 1, description: kind.desc(qs.length), questions: qs
+                    });
+                });
+            });
+            return out;
+        }
+        async function bulkCreateExams() {
+            if (!isStaff()) return;
+            if (!parsedBundleMeta.length) { showToast('Chưa có bộ đề nào được đọc từ file Word.', 'info'); return; }
+            const base = normFolder(document.getElementById('bulk-folder').value);
+            if (!base) { showToast('Hãy nhập tên thư mục chứa các đề.', 'info'); return; }
+            const kinds = [];
+            if (document.getElementById('bulk-mid').checked) kinds.push({ ...BULK_KINDS.mid, sub: normFolder(document.getElementById('bulk-mid-folder').value) || BULK_KINDS.mid.sub, duration: parseInt(document.getElementById('bulk-mid-time').value) || 50 });
+            if (document.getElementById('bulk-15').checked) kinds.push({ ...BULK_KINDS.quick, sub: normFolder(document.getElementById('bulk-15-folder').value) || BULK_KINDS.quick.sub, duration: parseInt(document.getElementById('bulk-15-time').value) || 15 });
+            if (!kinds.length) { showToast('Hãy tích chọn ít nhất một loại đề cần tạo.', 'info'); return; }
+            const subject = document.getElementById('create-exam-subject').value;
+            const built = buildExamsFromBundle(parsedBundleItems, parsedBundleMeta, { base, kinds, subject, author: Auth.user.username, stamp: Date.now() });
+            const exists = new Set(examsDatabase.filter(e => e.custom).map(e => normFolder(e.folder) + '|' + e.title));
+            const todo = built.filter(e => !exists.has(e.folder + '|' + e.title));
+            if (!todo.length) { showToast('Các đề này đã có trong thư mục rồi, không tạo lại.', 'info'); return; }
+            if (!confirm(`Tạo ${todo.length} đề (môn ${subject}) trong thư mục:\n${base}\n\n` + kinds.map(k => `• ${k.sub} (${k.duration} phút)`).join('\n') + (built.length - todo.length ? `\n\n(${built.length - todo.length} đề đã có sẽ được bỏ qua)` : ''))) return;
+            let ok = 0, fail = 0;
+            showToast('Đang tạo các đề, vui lòng chờ...', 'info');
+            for (const ex of todo) { try { await persistExam(ex); ok++; } catch (e) { fail++; } }
+            showToast(`Đã tạo ${ok} đề` + (fail ? `, ${fail} đề lỗi (kiểm tra Rules/kết nối).` : ' thành công.'), fail ? 'info' : 'success');
+            if (ok) {
+                currentFolder = base;
+                document.getElementById('filter-subject').value = 'all';
+                document.getElementById('filter-level').value = 'all';
+                document.getElementById('filter-type').value = 'all';
+                document.getElementById('filter-search').value = '';
+                switchTab('practice'); exitExamRoom();
+            }
+        }
+        // Tiêu đề từng phần (Phần I/II/III) trong phòng thi
+        function partHeaderHtml(idx) {
+            const qs = currentExam.questions, q = qs[idx];
+            if (!q.part || (idx > 0 && qs[idx - 1].part === q.part)) return '';
+            let end = idx; while (end + 1 < qs.length && qs[end + 1].part === q.part) end++;
+            const L = { 1: 'PHẦN I. Trắc nghiệm nhiều phương án lựa chọn', 2: 'PHẦN II. Trắc nghiệm Đúng/Sai', 3: 'PHẦN III. Trắc nghiệm trả lời ngắn' };
+            const N = { 1: 'Mỗi câu chỉ chọn một phương án đúng.', 2: 'Trong mỗi câu, chọn Đúng hoặc Sai cho từng ý a), b), c), d).', 3: 'Điền kết quả số vào ô trả lời.' };
+            return `<div class="px-4 py-3 rounded-xl bg-indigo-600 text-white"><p class="font-extrabold text-sm">${L[q.part] || ''} <span class="font-semibold opacity-80">(Câu ${idx + 1}–${end + 1})</span></p><p class="text-xs opacity-90 mt-0.5">${N[q.part] || ''}</p></div>`;
+        }
+
         function renderExamList() {
             const subFilter = document.getElementById('filter-subject').value;
             const lvlFilter = document.getElementById('filter-level').value;
@@ -2535,8 +2660,16 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
                 return matchSub && matchLvl && matchType && matchKw;
             });
 
+            const flat = !!searchKw || subFilter !== 'all' || lvlFilter !== 'all' || typeFilter !== 'all';
+            const byOrder = (a, b) => ((a.order || 9999) - (b.order || 9999)) || ((b.createdAt || 0) - (a.createdAt || 0));
+            let folders = [], list = filtered;
+            if (!flat) {
+                folders = folderChildren(filtered, currentFolder);
+                list = filtered.filter(e => normFolder(e.folder) === currentFolder).sort(byOrder);
+            }
+            document.getElementById('folder-bar').innerHTML = folderBarHtml(flat);
             const grid = document.getElementById('exam-list-grid');
-            if (filtered.length === 0) {
+            if (list.length === 0 && folders.length === 0) {
                 grid.innerHTML = `
                     <div class="col-span-full bg-white rounded-2xl border border-slate-200 p-12 text-center space-y-3">
                         <i class="fa-solid fa-magnifying-glass text-3xl text-slate-300"></i>
@@ -2547,7 +2680,7 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
                 return;
             }
 
-            grid.innerHTML = filtered.map(exam => {
+            grid.innerHTML = folders.map(folderCardHtml).join('') + list.map(exam => {
                 const st = getSubjectBadgeStyle(exam.subject);
                 return `
                     <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm hover:shadow-xl hover:border-blue-400 transition-all flex flex-col justify-between space-y-5">
@@ -2560,6 +2693,7 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
                             </div>
 
                             <h3 class="text-base sm:text-lg font-extrabold text-slate-900 leading-snug">${exam.title}</h3>
+                            ${flat && exam.folder ? `<p class="text-[11px] text-slate-400"><i class="fa-regular fa-folder mr-1"></i>${escapeHtml(exam.folder)}</p>` : ''}
                             <p class="text-xs text-slate-500 line-clamp-2 leading-relaxed">${exam.description}</p>
                         </div>
 
@@ -2719,7 +2853,7 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
                 ` : '';
 
                 return `
-                    <div id="question-card-${idx}" class="bg-white rounded-2xl border ${isFlagged ? 'border-amber-400 ring-2 ring-amber-400/20' : 'border-slate-200'} p-5 sm:p-6 shadow-sm space-y-4 transition">
+                    ${partHeaderHtml(idx)}<div id="question-card-${idx}" class="bg-white rounded-2xl border ${isFlagged ? 'border-amber-400 ring-2 ring-amber-400/20' : 'border-slate-200'} p-5 sm:p-6 shadow-sm space-y-4 transition">
                         <!-- Header từng câu hỏi -->
                         <div class="flex items-center justify-between gap-2 border-b border-slate-100 pb-3">
                             <div class="flex items-center space-x-2">
@@ -3554,7 +3688,7 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
                 }
             });
             if (items.length === 0) return null;
-            return { items, missing, noOpt, exams: heads.length };
+            return { items, missing, noOpt, exams: heads.length, examList: heads.map(h => ({ group: 'Đề ' + String(h.no).padStart(2, '0'), no: h.no, title: h.title })) };
         }
 
         // Bộ phân tích cú pháp thông minh (Smart Word Parser)
@@ -3569,6 +3703,8 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
             const bundle = parseExamBundle(raw);
             if (bundle) {
                 parsedWordQuestionsTemp = bundle.items;
+                parsedBundleItems = bundle.items.slice();
+                parsedBundleMeta = bundle.examList;
                 renderParsedWordPreview();
                 showToast(`Đã nhận dạng ${bundle.exams} đề, ${bundle.items.length} câu (trắc nghiệm, Đúng/Sai, Trả lời ngắn)` + (bundle.missing ? ` (${bundle.missing} câu chưa tìm thấy đáp án)` : '') + '.');
                 return;
@@ -3732,6 +3868,9 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
             box.classList.remove('hidden');
             importBtn.classList.remove('hidden');
             countEl.textContent = shown.length;
+            const bulk = document.getElementById('word-bulk-panel');
+            bulk.classList.toggle('hidden', !(isStaff() && parsedBundleMeta.length > 0));
+            document.getElementById('bulk-n-exams').textContent = parsedBundleMeta.length;
 
             const letters = ['A', 'B', 'C', 'D'];
             listEl.innerHTML = shown.map((item, idx) => `
@@ -3752,7 +3891,7 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
             const toAdd = parsedWordQuestionsTemp.filter(wordItemFilter());
             if (toAdd.length === 0) return;
             const addedCount = toAdd.length;
-            draftQuestions.push(...toAdd.map(x => { const c = { ...x }; delete c.group; delete c.num; delete c.part; return c; }));
+            draftQuestions.push(...toAdd.map(x => { const c = { ...x }; delete c.group; delete c.num; return c; }));
             parsedWordQuestionsTemp = parsedWordQuestionsTemp.filter(x => toAdd.indexOf(x) < 0);
             renderParsedWordPreview();
             renderDraftQuestionsList();
@@ -3907,6 +4046,7 @@ Lời giải: Tại t = 0,25 s = T/2, điểm trên đồ thị có tung độ x
 
             const newExamObj = {
                 id: 'nk-custom-' + Date.now(), createdAt: Date.now(),
+                folder: normFolder(document.getElementById('create-exam-folder').value),
                 title: title,
                 subject: subject,
                 level: level,
