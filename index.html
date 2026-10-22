@@ -2600,7 +2600,7 @@ Câu 2: ..." class="w-full rounded-xl border border-slate-300 p-3.5 font-mono te
                     out.push({
                         id: 'nk-custom-' + o.stamp + '-' + seq, createdAt: o.stamp + seq, order: m.no,
                         folder: normFolder(o.base + '/' + kind.sub),
-                        title: kind.titlePrefix + m.group + (m.title ? ' – ' + m.title : ''),
+                        title: kind.titlePrefix + m.group + (m.title ? ' – ' + m.title.replace(/THPT 2025/g, 'THPT 2027') : ''),
                         subject: o.subject, level: kind.level, type: kind.type, duration: kind.duration,
                         author: o.author, attempts: 1, description: kind.desc(qs.length), questions: qs
                     });
